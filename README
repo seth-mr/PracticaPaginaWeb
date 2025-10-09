@@ -1,0 +1,163 @@
+Checklist para entregar 
+Código fuente completo y ejecutable. SI
+Capturas ZAP: Sites, Alerts list, Alert detail. SI
+Reporte (PDF) con comparativa antes/después.SI
+package.json y seed.sql incluidos. SI
+Instrucciones de ejecución (README). SI
+
+GUIA PARA EJECUTAR EL PROYECTO
+## GUIA DE EJECUCION ## Estructura del laboratorio 
+
+```
+zap-lab/
+  ├─ app.js
+  ├─ db.js
+  ├─ seed.sql
+  ├─ .env
+  ├─ views/
+  │   ├─ index.ejs
+  │   └─ users.ejs
+  └─ package.json
+```
+
+---
+
+## Guía paso a paso: creación de la web vulnerable
+
+### 1) Crear proyecto e instalar dependencias
+
+```
+mkdir zap-lab && cd zap-lab
+npm init -y
+npm i express sqlite3 ejs dotenv
+```
+
+### 2) `seed.sql` (datos semilla)
+
+```
+DROP TABLE IF EXISTS users;
+CREATE TABLE users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE
+);
+
+INSERT INTO users (name, email) VALUES
+('Alice', 'alice@example.com'),
+('Bob', 'bob@example.com'),
+('Eve', 'eve@example.com'),
+('Mallory', 'mallory@example.com');
+```
+
+### 3) `db.js` (conexión y seed)
+
+```
+const sqlite3 = require('sqlite3').verbose();
+const fs = require('fs');
+const path = require('path');
+
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'app.db');
+const db = new sqlite3.Database(DB_PATH);
+
+db.serialize(() => {
+  db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE)");
+  db.get("SELECT COUNT(*) AS c FROM users", (err, row) => {
+    if (err) return;
+    if (row && row.c === 0) {
+      const seedSql = fs.readFileSync(path.join(__dirname, 'seed.sql'), 'utf8');
+      db.exec(seedSql);
+    }
+  });
+});
+
+module.exports = db;
+```
+
+### 4) `views/index.ejs`
+
+```
+<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8"><title>Lab ZAP</title></head>
+  <body>
+    <h1>Laboratorio ZAP</h1>
+    <ul>
+      <li><a href="/users">/users</a> (lista usuarios con filtro vulnerable ?name=...)</li>
+      <li><a href="/echo?msg=Hola">/echo</a> (eco vulnerable a XSS)</li>
+    </ul>
+  </body>
+</html>
+```
+
+### 5) `views/users.ejs`
+
+```
+<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8"><title>Usuarios</title></head>
+  <body>
+    <h1>Usuarios</h1>
+    <form method="get" action="/users">
+      <input name="name" value="<%= q %>" placeholder="filtro por nombre">
+      <button type="submit">Buscar</button>
+    </form>
+    <table border="1" cellpadding="4">
+      <tr><th>ID</th><th>Nombre</th><th>Email</th></tr>
+      <% rows.forEach(u => { %>
+        <tr>
+          <td><%= u.id %></td>
+          <td><%= u.name %></td>
+          <td><%= u.email %></td>
+        </tr>
+      <% }) %>
+    </table>
+    <p><a href="/">Inicio</a></p>
+  </body>
+</html>
+```
+
+### 6) `app.js` (versión vulnerable a propósito)
+
+```
+require('dotenv').config();
+const path = require('path');
+const express = require('express');
+const db = require('./db');
+
+const app = express();
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+// Ruta vulnerable a inyección SQL (intencional)
+app.get('/users', (req, res) => {
+  const name = req.query.name || '';
+  const sql = `SELECT id, name, email FROM users WHERE name LIKE '%${name}%'`; // VULNERABLE
+  db.all(sql, (err, rows) => {
+    if (err) return res.status(500).send('Error DB');
+    res.render('users', { rows, q: name });
+  });
+});
+
+// XSS reflejado (eco sin escapar)
+app.get('/echo', (req, res) => {
+  const msg = req.query.msg || '';
+  res.send(`<h1>Echo</h1><p>${msg}</p>`); // VULNERABLE
+});
+
+app.get('/', (req, res) => res.render('index'));
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`App en http://localhost:${port}`));
+```
+
+### 7) Ejecutar la aplicación
+
+```
+node app.js
+# Abrir: http://localhost:3000
+# Pruebas:
+#  - http://localhost:3000/users?name=Al
+#  - http://localhost:3000/echo?msg=<script>alert('xss')</script>
+```
